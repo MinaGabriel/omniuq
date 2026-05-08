@@ -128,6 +128,7 @@ class SpectralUncertainty:
 
     @torch.inference_mode()
     def _sample_answers(self, prompt: str) -> list[str]:
+        # Multinomial sampling at temperature t — paper's setup
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         outputs = self.model.generate(
             **inputs,
@@ -136,12 +137,17 @@ class SpectralUncertainty:
             temperature=self.temperature,
             num_return_sequences=self.m,
             pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            stop_strings=["\n", "###", "Question:", "Note:"],
+            tokenizer=self.tokenizer,
         )
-        gen = outputs[:, inputs["input_ids"].shape[1] :]
+        gen = outputs[:, inputs["input_ids"].shape[1]:]
         return [
             self.tokenizer.decode(g, skip_special_tokens=True)
             .strip()
             .split("\n")[0]
+            .split("###")[0]
+            .split("Question:")[0]
             .strip()
             for g in gen
         ]
