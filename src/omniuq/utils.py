@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -111,9 +113,24 @@ ARTIFACT_MARKERS = [
 def clean_answer(text: str) -> str:
     """Strip artifacts from a model's raw output. Use after every generation."""
     text = text.strip()
+    # Split on rambling artifact markers (newlines, leaked tokens, etc.)
     for marker in ARTIFACT_MARKERS:
         if marker in text:
             text = text.split(marker)[0]
+    text = text.strip()
+    # Strip TriviaQA/OpenNQ-style generated prefixes (e.g. "A: Paris", "Random guess: Rome")
+    for pattern in [
+        re.compile(r"The question is unclear\. Random guess:\s*", re.IGNORECASE),
+        re.compile(r"Random guess:\s*", re.IGNORECASE),
+        re.compile(r"^A:\s*", re.IGNORECASE),
+    ]:
+        m = pattern.match(text)
+        if m:
+            text = text[m.end():].strip()
+            break
+    # Strip surrounding quotes and trailing punctuation
+    text = text.strip("\"'")
+    text = re.sub(r"[.?!]+$", "", text)
     return text.strip()
 
 
@@ -144,12 +161,17 @@ def generate_answers(
     question: str,
     n: int = 1,
     temperature: float = 0.0,
-    max_new_tokens: int = 64,
+    max_new_tokens: int = 100,
     terse: bool = True,
+    top_p: float | None = None,
+    seed: int | None = None,
 ) -> list[str]:
     """One generation function used everywhere — same prompt logic across the library."""
     prompt = build_prompt(tokenizer, question, terse=terse)
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+    if seed is not None:
+        torch.manual_seed(seed)
 
     do_sample = temperature > 0
     gen_kwargs = dict(
@@ -161,6 +183,8 @@ def generate_answers(
     if do_sample:
         gen_kwargs["temperature"] = temperature
         gen_kwargs["num_return_sequences"] = n
+        if top_p is not None:
+            gen_kwargs["top_p"] = top_p
 
     with torch.inference_mode():
         outputs = model.generate(**inputs, **gen_kwargs)

@@ -18,29 +18,65 @@ DEFAULT_M_SAMPLES = 10
 DEFAULT_GAMMA = 1.0
 EPS = 1e-12
 
-# the prompt still say 10 however, we cap clarifications in code (so if it still return 10 we follow the max_clarifications param)
-CLARIFICATION_PROMPT = """Analyze the given question for ambiguities. If ambiguous, provide multiple clarifications that resolve the ambiguity. Each clarification must be a fully-specified question.
+# Rephrasing prompt matches reference repo TriviaQA zero_shot_clarification template.
+# Produces 5 semantically equivalent rephrasings, parsed via ### Rephrasings: / #N markers.
+CLARIFICATION_PROMPT = """\
+**Objective**
+In this task, you will receive a question. Your goal is to generate multiple versions of the question that convey the same meaning as the original one.
 
-Rules:
-- At most 10 clarifications.
-- If unambiguous, output one paraphrase.
-- Do not include answers.
+**Important Rules**
+1. Ensure that each rephrasing of the question is distinct from the others.
+2. Ensure that all rephrasings of the question are semantically equivalent to the original question.
+3. Provide 5 different rephrasings of the question.
 
-Output format:
----Clarifications:
--1 [first clarification]
--2 [second clarification]
-...
+**Output Format**
+Your output should follow this format:
+### Rephrasings:
+#1 [Your rephrased question]
+#2 [Another rephrased question]
+#3 [Yet another rephrased question]
+#4 [A fourth rephrasing of the question]
+#5 [A fifth rephrasing of the question]
 
-Question: {question}
-"""
+**Task Input**
+### Original Question:
+{question}"""
 
-JUDGE_PROMPT = """Compare a model answer to a list of acceptable ground truth answers. The model answer is correct if it is semantically equivalent to ANY one of them, even if not lexically identical. Capitalization and minor wording do not matter. Output only "yes" or "no".
+# Answer template matches reference repo TriviaQA generate_answer.txt + format_query() wrapper.
+ANSWER_TEMPLATE = """\
+**Objective**
+In the following, I will provide a question and you need to provide an answer to the question. Your answer has to be short and precise. Do not write extra text or explanation, just give the answer directly. If the question is unclear or you do not know the answer, do not answer with phrases like "I'm sorry.." or "The question is unclear". Instead, you need to give a random guess for the answer. Do not ask follow-up questions or indicate that you do not know the answer. You should always provide a short and precise answer; either the true answer if you know it or your random guess if you are unsure. It should not be recognizable in your output whether your answer is the true answer or the random guess.
+Your output should follow the format specified below in the Output Format section.
 
-Question: {question}
-Acceptable answers: {gold}
-Model answer: {pred}
-"""
+**Output Format**
+A: [Your short and precise answer or random guess to the question. Do not include any additional information.]
+
+**Task**
+Question:
+Q: {question}"""
+
+# Judge prompt matches reference repo TriviaQA correctness_judge.txt + format_correctness_judge_query() wrapper.
+JUDGE_PROMPT = """\
+**Objective**
+In this task, you will receive a question. You will also receive a ground truth answer to the question and a model generated answer. Your goal is to compare the ground truth answer and the model generated answer in order to decide whether the model generated answer is correct or not.
+
+**Important Rules**
+1. The model generated answer is correct, when it is a valid answer to the question, and semantically equivalent to the ground truth answer. It does not necessarily need to overlap with the ground truth answer lexically.
+2. If the model generated answer contains more information (more specific) or less information (less specific) than the ground truth answer, but still correctly answers the question, then you should consider it correct.
+3. If you decide that the model generated answer is correct, say yes, otherwise say no.
+4. Your output should only contain your decision (yes or no). It should not contain any other text, explanation or reasoning.
+
+**Input**
+### Question:
+{question}
+
+### Ground Truth Answer:
+{gold}
+
+### Model Generated Answer:
+{pred}
+
+Is the model generated answer correct? Answer with yes or no."""
 
 
 class SpectralUncertainty:
@@ -57,12 +93,12 @@ class SpectralUncertainty:
         target_model,
         clarifier=None,  # OpenAIProvider OR (tokenizer, hf_model) tuple
         judge=None,  # same options as clarifier
-        max_clarifications: int = 10,
+        max_clarifications: int = 5,
         embedder_name: str = DEFAULT_EMBEDDER,
         m_samples: int = DEFAULT_M_SAMPLES,
         temperature: float = DEFAULT_TEMPERATURE,
         gamma: float = DEFAULT_GAMMA,
-        max_new_tokens: int = 64,
+        max_new_tokens: int = 100,
     ):
         self.tokenizer = target_tokenizer
         self.model = target_model
@@ -107,7 +143,9 @@ class SpectralUncertainty:
             CLARIFICATION_PROMPT.format(question=question),
             max_tokens=512,
         )
-        matches = [m.strip() for m in re.findall(r"-\d+\s+(.+)", text) if m.strip()]
+        # Parse "### Rephrasings:\n#1 ...\n#2 ..." format from reference repo
+        matches = re.findall(r"#\d+\s+(.*?)(?=(?:---|#|\Z))", text, re.DOTALL)
+        matches = [m.strip() for m in matches if m.strip()]
         return matches[: self.max_clarifications] if matches else [question]
 
     # --- Judging ---
@@ -115,7 +153,7 @@ class SpectralUncertainty:
     def judge(self, question: str, prediction: str, gold: list[str]) -> int:
         if self.judge_provider is None:
             raise RuntimeError("No judge provider was passed to SpectralUncertainty.")
-        gold_str = "\n".join(f"- {g}" for g in gold)
+        gold_str = " / ".join(gold)
         text = self._chat(
             self.judge_provider,
             JUDGE_PROMPT.format(question=question, gold=gold_str, pred=prediction),
@@ -127,26 +165,29 @@ class SpectralUncertainty:
 
     @torch.inference_mode()
     def _sample_answers(self, question: str) -> list[str]:
+        prompt = ANSWER_TEMPLATE.format(question=question)
         return generate_answers(
             self.tokenizer,
             self.model,
-            question,
+            prompt,
             n=self.m,
             temperature=self.temperature,
             max_new_tokens=self.max_new_tokens,
-            terse=True,
+            top_p=0.95,
+            terse=False,
         )
 
     @torch.inference_mode()
-    def greedy_answer(self, question: str, max_new_tokens: int = 32) -> str:
+    def greedy_answer(self, question: str, max_new_tokens: int = 100) -> str:
+        prompt = ANSWER_TEMPLATE.format(question=question)
         return generate_answers(
             self.tokenizer,
             self.model,
-            question,
+            prompt,
             n=1,
             temperature=0.1,
             max_new_tokens=max_new_tokens,
-            terse=True,
+            terse=False,
         )[0]
 
     # --- Spectral math ---
@@ -168,7 +209,8 @@ class SpectralUncertainty:
 
         for clar in clarifications:
             answers = self._sample_answers(clar)
-            embeds = self.embedder.encode(answers, normalize_embeddings=True)
+            # No normalize_embeddings — matches reference repo encoding_arguments
+            embeds = self.embedder.encode(answers, convert_to_numpy=True)
             per_clarif_embeds.append(embeds)
             all_embeddings.append(embeds)
             all_answers.append(answers)
