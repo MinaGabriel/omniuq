@@ -127,9 +127,15 @@ class SpectralUncertainty:
     # --- Sampling ---
 
     @torch.inference_mode()
-    def _sample_answers(self, prompt: str) -> list[str]:
-        # Multinomial sampling at temperature t — paper's setup
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+    def _sample_answers(self, question: str) -> list[str]:
+        # Use Phi-4's chat template + explicit terse instruction
+        messages = [
+            {"role": "user", "content": f"{question}\n\nAnswer with a single short phrase. No explanation."}
+        ]
+        formatted = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
         outputs = self.model.generate(
             **inputs,
             max_new_tokens=self.max_new_tokens,
@@ -138,19 +144,20 @@ class SpectralUncertainty:
             num_return_sequences=self.m,
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            stop_strings=["\n", "###", "Question:", "Note:"],
-            tokenizer=self.tokenizer,
         )
         gen = outputs[:, inputs["input_ids"].shape[1]:]
-        return [
-            self.tokenizer.decode(g, skip_special_tokens=True)
-            .strip()
-            .split("\n")[0]
-            .split("###")[0]
-            .split("Question:")[0]
-            .strip()
-            for g in gen
-        ]
+        return [self._clean_answer(self.tokenizer.decode(g, skip_special_tokens=True)) for g in gen]
+
+
+    @staticmethod
+    def _clean_answer(text: str) -> str:
+        # Defense against Phi-4 textbook-leak artifacts
+        text = text.strip()
+        for marker in ["\n", "#", "Question:", "Note:", "Alice:", "Bob:",
+                    "Student:", "Teacher:", "Problem:", "Query:"]:
+            if marker in text:
+                text = text.split(marker)[0]
+        return text.strip()
 
     # --- Spectral math ---
 
@@ -170,8 +177,7 @@ class SpectralUncertainty:
         all_answers = []
 
         for clar in clarifications:
-            prompt = f"Question: {clar}\nAnswer:"
-            answers = self._sample_answers(prompt)
+            answers = self._sample_answers(clar) 
             embeds = self.embedder.encode(answers, normalize_embeddings=True)
             per_clarif_embeds.append(embeds)
             all_embeddings.append(embeds)
