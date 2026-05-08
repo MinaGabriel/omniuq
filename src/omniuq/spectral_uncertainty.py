@@ -9,8 +9,7 @@ import torch
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import rbf_kernel
 from tqdm.auto import tqdm
-
-from .utils import OpenAIProvider, parametric_answer
+from .utils import OpenAIProvider, generate_answers, parametric_answer
 
 # Defaults from Walha et al. 2025 (arXiv:2509.22272)
 DEFAULT_EMBEDDER = "sentence-transformers/all-mpnet-base-v2"
@@ -19,7 +18,7 @@ DEFAULT_M_SAMPLES = 10
 DEFAULT_GAMMA = 1.0
 EPS = 1e-12
 
-
+# the prompt still say 10 however, we cap clarifications in code (so if it still return 10 we follow the max_clarifications param)
 CLARIFICATION_PROMPT = """Analyze the given question for ambiguities. If ambiguous, provide multiple clarifications that resolve the ambiguity. Each clarification must be a fully-specified question.
 
 Rules:
@@ -128,36 +127,27 @@ class SpectralUncertainty:
 
     @torch.inference_mode()
     def _sample_answers(self, question: str) -> list[str]:
-        # Use Phi-4's chat template + explicit terse instruction
-        messages = [
-            {"role": "user", "content": f"{question}\n\nAnswer with a single short phrase. No explanation."}
-        ]
-        formatted = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        inputs = self.tokenizer(formatted, return_tensors="pt").to(self.model.device)
-        outputs = self.model.generate(
-            **inputs,
-            max_new_tokens=self.max_new_tokens,
-            do_sample=True,
+        return generate_answers(
+            self.tokenizer,
+            self.model,
+            question,
+            n=self.m,
             temperature=self.temperature,
-            num_return_sequences=self.m,
-            pad_token_id=self.tokenizer.pad_token_id,
-            eos_token_id=self.tokenizer.eos_token_id,
+            max_new_tokens=self.max_new_tokens,
+            terse=True,
         )
-        gen = outputs[:, inputs["input_ids"].shape[1]:]
-        return [self._clean_answer(self.tokenizer.decode(g, skip_special_tokens=True)) for g in gen]
 
-
-    @staticmethod
-    def _clean_answer(text: str) -> str:
-        # Defense against Phi-4 textbook-leak artifacts
-        text = text.strip()
-        for marker in ["\n", "#", "Question:", "Note:", "Alice:", "Bob:",
-                    "Student:", "Teacher:", "Problem:", "Query:"]:
-            if marker in text:
-                text = text.split(marker)[0]
-        return text.strip()
+    @torch.inference_mode()
+    def greedy_answer(self, question: str, max_new_tokens: int = 32) -> str:
+        return generate_answers(
+            self.tokenizer,
+            self.model,
+            question,
+            n=1,
+            temperature=0.1,
+            max_new_tokens=max_new_tokens,
+            terse=True,
+        )[0]
 
     # --- Spectral math ---
 
@@ -177,7 +167,7 @@ class SpectralUncertainty:
         all_answers = []
 
         for clar in clarifications:
-            answers = self._sample_answers(clar) 
+            answers = self._sample_answers(clar)
             embeds = self.embedder.encode(answers, normalize_embeddings=True)
             per_clarif_embeds.append(embeds)
             all_embeddings.append(embeds)
