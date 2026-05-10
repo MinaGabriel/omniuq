@@ -219,7 +219,6 @@ first tells you what question you're answering;
 the second tells you which tool to use.
 
 ---
-
 ## Methods
 
 The **Category** column refers to the numbered
@@ -228,6 +227,7 @@ nodes in the UQ Methods tree above.
 | Method | Category | Decomposes | Paper | Code | Reproduced | Status |
 |---|---|---|---|---|---|---|
 | Spectral Uncertainty (Walha et al., AAAI 2026) | 1.1 & 4.3.7 | AU + EU | [arXiv](https://arxiv.org/abs/2509.22272) | [GitHub](https://github.com/MLO-lab/spectral_uncertainty_decomposition) | TriviaQA: AUROC **89.66%** vs. paper 91.92% — [Colab](https://colab.research.google.com/drive/1VjD4nFdvZR1ad1Z32qU43sGtvCVwdKsD?usp=sharing) | ✅ Available |
+| Verbalized Confidence (Xiong et al., ICLR 2024) | 4.1.6 & 4.2.1 | — | [arXiv](https://arxiv.org/abs/2306.13063) | [GitHub](https://github.com/MiaoXiong2320/llm-uncertainty) | GSM8K: AUROC Vanilla **56.23%** → CoT+M5+AvgConf **90.92%** (+34.7 pts) — [Colab](https://colab.research.google.com/drive/1mP8fcSDfuv1dqxrYILMXc3YaFrfBF3IZ?usp=sharing) | ✅ Available |
 
 ### Demo 1 — Spectral Uncertainty
 
@@ -260,6 +260,33 @@ uq = SpectralUncertainty(
 )
 
 print(uq.score("What is the capital of France?"))
+```
+
+### Demo 2 — Verbalized Confidence (Xiong et al.)
+
+Llama-3.1-8B as target. No API keys needed —
+the model verbalizes its own confidence.
+
+```python
+from omniuq import load_llm_model
+from omniuq.verbalized_xiong import run_xiong
+
+tokenizer, model = load_llm_model(
+    "meta-llama/Llama-3.1-8B-Instruct"
+)
+device = model.device
+
+# Strongest configuration: CoT + Self-Random M=5 + AvgConf
+result = run_xiong(
+    model, tokenizer,
+    "If 7 cars need 14 hours to complete a task, "
+    "how long do 5 cars need?",
+    device,
+    prompting="cot",
+    n_samples=5,
+    aggregation="avg_conf",
+)
+print(result["answer"], result["confidence"])
 ```
 
 ---
