@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import re
 
 
 def load_llm_model(
@@ -212,3 +214,36 @@ def parametric_answer(
         max_new_tokens=max_new_tokens,
         terse=False,
     )[0]
+
+
+def expected_calibration_error(
+    confidences: np.ndarray,
+    correctness: np.ndarray,
+    n_bins: int = 10,
+) -> float:
+    """Standard ECE: weighted average of |accuracy - confidence| per bin."""
+    bins = np.linspace(0, 1, n_bins + 1)
+    ece = 0.0
+    for i in range(n_bins):
+        in_bin = (confidences >= bins[i]) & (confidences < bins[i + 1])
+        if i == n_bins - 1:
+            in_bin |= confidences == 1.0
+        if in_bin.sum() == 0:
+            continue
+        bin_acc = correctness[in_bin].mean()
+        bin_conf = confidences[in_bin].mean()
+        ece += (in_bin.sum() / len(confidences)) * abs(bin_acc - bin_conf)
+    return float(ece)
+
+
+def gsm8k_correct(prediction: str, gold: str) -> int:
+    """Extract first number from prediction, compare to gold."""
+    nums = re.findall(r"-?\d+(?:,\d{3})*(?:\.\d+)?", prediction.replace(",", ""))
+    if not nums:
+        return 0
+    try:
+        pred_num = float(nums[-1])  # last number = the answer
+        gold_num = float(gold.replace(",", ""))
+        return int(abs(pred_num - gold_num) < 1e-6)
+    except ValueError:
+        return 0

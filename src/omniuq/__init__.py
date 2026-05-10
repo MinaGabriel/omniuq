@@ -4,7 +4,7 @@ from .runtime import configure_runtime
 
 configure_runtime()
 
-from .utils import OpenAIProvider, load_llm_model, load_openai_client, parametric_answer
+from .utils import OpenAIProvider, load_llm_model, load_openai_client, parametric_answer, gsm8k_correct, expected_calibration_error
 from .datasets import DatasetLoader
 from .spectral_uncertainty import SpectralUncertainty
 
@@ -16,4 +16,6 @@ __all__ = [
     "parametric_answer",
     "DatasetLoader",
     "SpectralUncertainty",
+    "gsm8k_correct",    
+    "expected_calibration_error",
 ]
