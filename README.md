@@ -22,8 +22,9 @@ card), enable quantization:
 pip install "omniuq[quantize]"
 ```
 
-You'll need an OpenAI API key for the clarifier
-and judge:
+Spectral Uncertainty needs an OpenAI API key for
+the clarifier and judge (P(True) and Verbalized
+Confidence run fully locally):
 
 ```bash
 export OPENAI_API_KEY=sk-...
@@ -172,7 +173,7 @@ UQ Methods
     │   │   └── Scores how unlikely the generated response is
     │   │
     │   └── 4.1.6 P(True)
-    │       └── Uses the model's verbalized confidence that an answer is true
+    │       └── Probability the model assigns to "True" when asked whether its own answer is correct
     │
     ├── 4.2 Multi-Generation Methods
     │   │
@@ -228,6 +229,7 @@ nodes in the UQ Methods tree above.
 |---|---|---|---|---|---|---|
 | Spectral Uncertainty (Walha et al., AAAI 2026) | 1.1 & 4.3.7 | AU + EU | [arXiv](https://arxiv.org/abs/2509.22272) | [GitHub](https://github.com/MLO-lab/spectral_uncertainty_decomposition) | TriviaQA: AUROC **89.66%** vs. paper 91.92% — [Colab](https://colab.research.google.com/drive/1VjD4nFdvZR1ad1Z32qU43sGtvCVwdKsD?usp=sharing) | ✅ Available |
 | Verbalized Confidence (Xiong et al., ICLR 2024) | 4.1.6 & 4.2.1 | — | [arXiv](https://arxiv.org/abs/2306.13063) | [GitHub](https://github.com/MiaoXiong2320/llm-uncertainty) | GSM8K: AUROC Vanilla **56.23%** → CoT+M5+AvgConf **90.92%** (+34.7 pts) — [Colab](https://colab.research.google.com/drive/1mP8fcSDfuv1dqxrYILMXc3YaFrfBF3IZ?usp=sharing) | ✅ Available |
+| P(True) (Kadavath et al., 2022) | 4.1.6 | — | [arXiv](https://arxiv.org/abs/2207.05221) | Not released | TriviaQA: AUROC **91.1%** (Qwen2.5-7B) vs. paper ≈88% (52B, private); accuracy 45.6% → **70.9%** when P(True) > 0.5 — [Colab](https://colab.research.google.com/drive/17ppI5hY5AhW41OLWys9CTkQU8TbGiusI?usp=sharing) | ✅ Available |
 
 ### Demo 1 — Spectral Uncertainty
 
@@ -289,6 +291,57 @@ result = run_xiong(
 print(result["answer"], result["confidence"])
 ```
 
+
+### Demo 3 — P(True) (Kadavath et al.)
+
+Qwen2.5-7B **base** model. No API keys, no
+quantization: bf16 on a single 24 GB GPU (e.g. L4).
+
+```python
+from omniuq import load_llm_model
+from omniuq.ptrue_kadavath import run_kadavath
+
+tokenizer, model = load_llm_model(
+    "Qwen/Qwen2.5-7B", device="cuda:0"
+)
+
+result = run_kadavath(
+    model, tokenizer,
+    "Which 1986 Peter Weir movie starred "
+    "Harrison Ford, Helen Mirren and River Phoenix?",
+)
+print(result["answer"], result["p_true"], result["pe"])
+```
+
+**How it works.** The model samples 5 answers at
+temperature 1. It then reads the paper's prompt —
+the question, its own samples as "brainstormed
+ideas", the first sample as the possible answer —
+and P(True) is the probability it gives to
+`(A) True` versus `(B) False`. Predictive entropy
+(PE) over the 5 samples is returned as a baseline.
+
+**Replication (TriviaQA, 1,000 questions).**
+Qwen2.5-7B base, bf16; TriviaQA `rc.nocontext`
+validation, de-duplicated, seed 1234. Base accuracy
+45.6%. Full run in the
+[Colab](https://colab.research.google.com/drive/17ppI5hY5AhW41OLWys9CTkQU8TbGiusI?usp=sharing).
+
+| Method | AUROC | Brier | ECE | Acc. at P(True) > 0.5 | Coverage |
+|---|---|---|---|---|---|
+| P(True), 20-shot | 0.911 | **0.150** | **0.141** | **0.709** | 0.611 |
+| P(True), paper prompt (A.5), with samples | **0.921** | 0.182 | 0.190 | 0.673 | 0.646 |
+| P(True), paper prompt (A.5), without samples | 0.898 | 0.178 | 0.181 | 0.672 | 0.646 |
+| Predictive entropy | 0.850 | — | — | — | — |
+
+The paper's main findings hold: P(True) separates
+right from wrong answers better than PE; keeping
+answers with P(True) > 0.5 raises accuracy (45.6% →
+70.9%); showing the model its own samples helps;
+and 20-shot examples mainly improve calibration.
+The paper's private 52B model is not available, so
+compare patterns, not exact numbers.
+ 
 ---
 
 ## License
