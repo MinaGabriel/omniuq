@@ -1,13 +1,13 @@
 # src/omniuq/utils.py
-
 from __future__ import annotations
 
+import random
 import re
+import string
 
 import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import re
 
 
 def load_llm_model(
@@ -247,3 +247,32 @@ def gsm8k_correct(prediction: str, gold: str) -> int:
         return int(abs(pred_num - gold_num) < 1e-6)
     except ValueError:
         return 0
+
+# ---------- TriviaQA grading (official evaluation script) ----------
+
+_PUNC = set(string.punctuation + "‘’´`")
+
+
+def normalize_triviaqa(s: str) -> str:
+    """Lowercase, punctuation to spaces, drop articles, collapse whitespace (mandarjoshi90/triviaqa)."""
+    s = "".join(" " if c in _PUNC else c for c in s.lower().replace("_", " "))
+    return " ".join(re.sub(r"\b(a|an|the)\b", " ", s).split())
+
+
+def triviaqa_correct(prediction: str, answers: list[str]) -> bool:
+    """Alias-aware exact match after normalization. No substring matching."""
+    return bool(prediction.strip()) and normalize_triviaqa(prediction) in {normalize_triviaqa(a) for a in answers}
+
+
+# ---------- Few-shot demonstrations ----------
+
+def sample_demos(pool: list[dict], target: dict, k: int, tag: str, seed: int = 1234) -> list[dict]:
+    """Draw k demonstrations for `target` from `pool` (records from DatasetLoader("triviaqa")).
+
+    Excludes the target and any question sharing a gold answer with it, so the target's
+    answer never appears in its own prompt. Deterministic per (seed, tag, target id);
+    use different tags for different prompts (e.g. "gen" and "ptrue").
+    """
+    t = {normalize_triviaqa(a) for a in target["answers"]}
+    cands = [q for q in pool if q["id"] != target["id"] and not t & {normalize_triviaqa(a) for a in q["answers"]}]
+    return random.Random(f"{seed}-{tag}-{target['id']}").sample(cands, k)
