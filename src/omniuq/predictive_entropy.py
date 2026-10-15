@@ -38,12 +38,15 @@ def build_prompt(question: str, demos: list[tuple[str, str]] | None = None,
     return f"{preamble}{shots}Question: {question} Answer:"
 
 
-def clean_generation(text: str, strings: tuple[str, ...] = KUHN_CLEAN_STRINGS) -> str:
-    """Keep only the text before the first cut string. The leading space is kept on purpose."""
+def clean_generation(
+    text: str,
+    strings: tuple[str, ...] = KUHN_CLEAN_STRINGS
+) -> str:
     for s in strings:
         if s in text:
             text = text.split(s)[0]
-    return text
+
+    return text.rstrip()
 
 
 # ---------- The estimator ----------
