@@ -38,15 +38,12 @@ def build_prompt(question: str, demos: list[tuple[str, str]] | None = None,
     return f"{preamble}{shots}Question: {question} Answer:"
 
 
-def clean_generation(
-    text: str,
-    strings: tuple[str, ...] = KUHN_CLEAN_STRINGS
-) -> str:
+def clean_generation(text: str, strings: tuple[str, ...] = KUHN_CLEAN_STRINGS) -> str:
+    """Keep the text before the first cut string. No stripping, as in the paper's code."""
     for s in strings:
         if s in text:
             text = text.split(s)[0]
-
-    return text.rstrip()
+    return text
 
 
 # ---------- The estimator ----------
@@ -82,11 +79,14 @@ class PredictiveEntropy:
       3. score each answer's tokens with the model
       4. PE = -mean(answer log-probs)
       5. beam search for the most likely answer (used to grade correctness)
+
+    stop_at_eos: False = paper (stop only at "."). True = also stop at the model's end-of-text token.
     """
 
     def __init__(self, model, tokenizer, num_samples: int = 10, temperature: float = 0.5,
                  top_k: int = 50, top_p: float = 1.0, max_new_tokens: int = 256, num_beams: int = 5,
-                 stop_token: str = ".", banned_strings: tuple[str, ...] = KUHN_BANNED_STRINGS,
+                 stop_token: str = ".", stop_at_eos: bool = False,
+                 banned_strings: tuple[str, ...] = KUHN_BANNED_STRINGS,
                  clean_strings: tuple[str, ...] = KUHN_CLEAN_STRINGS):
         self.model = model
         self.tokenizer = tokenizer
@@ -102,7 +102,9 @@ class PredictiveEntropy:
         stop = tokenizer(stop_token, add_special_tokens=False).input_ids
         if len(stop) != 1:
             raise ValueError(f"stop_token {stop_token!r} is not a single token for this tokenizer.")
-        self.stop_id = stop[0]
+        self.stop_ids = [stop[0]]
+        if stop_at_eos and tokenizer.eos_token_id is not None and tokenizer.eos_token_id != stop[0]:
+            self.stop_ids.append(tokenizer.eos_token_id)
 
         # Ban the first token of each banned string (no duplicates).
         first_ids = dict.fromkeys(tokenizer(s, add_special_tokens=False).input_ids[0] for s in banned_strings)
@@ -130,7 +132,7 @@ class PredictiveEntropy:
             top_p=self.top_p,
             num_return_sequences=self.num_samples,
             max_new_tokens=self.max_new_tokens,
-            eos_token_id=self.stop_id,
+            eos_token_id=self.stop_ids,
             pad_token_id=self.pad_id,
             bad_words_ids=self.bad_words_ids,
             stopping_criteria=StoppingCriteriaList([_StopOnStrings(self.tokenizer, p_len, self.clean_strings)]),
@@ -149,7 +151,7 @@ class PredictiveEntropy:
             num_beams=self.num_beams,
             num_return_sequences=1,
             max_new_tokens=self.max_new_tokens,
-            eos_token_id=self.stop_id,
+            eos_token_id=self.stop_ids,
             pad_token_id=self.pad_id,
             bad_words_ids=self.bad_words_ids,
         )
@@ -207,9 +209,11 @@ class PredictiveEntropy:
 
 
 def run_predictive_entropy(model, tokenizer, question: str, demos: list[tuple[str, str]] | None = None,
-                           num_samples: int = 10, temperature: float = 0.5, seed: int | None = None) -> dict:
+                           num_samples: int = 10, temperature: float = 0.5, stop_at_eos: bool = False,
+                           seed: int | None = None) -> dict:
     """Score one question with the paper's settings."""
-    pe = PredictiveEntropy(model, tokenizer, num_samples=num_samples, temperature=temperature)
+    pe = PredictiveEntropy(model, tokenizer, num_samples=num_samples, temperature=temperature,
+                           stop_at_eos=stop_at_eos)
     return {"question": question, **pe.score(build_prompt(question, demos), seed=seed)}
 
 
